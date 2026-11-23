@@ -13,10 +13,7 @@ app.use(bodyParser.urlencoded({
 }));
 app.use(express.static("public"));
 
-mongoose.connect("mongodb://localhost:27017/wikiDB", {
-  useNewUrlParser: true,
-  useUnifiedTopology: true
-});
+const databaseUri = process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/wikiDB";
 
 const articleSchema = {
   title: String,
@@ -26,115 +23,94 @@ const articleSchema = {
 const Article = mongoose.model("Article", articleSchema);
 
 
-////////////////////Request Targeting all articles//////////////////////
+function readArticleFields(body, rejectUnknown = false) {
+  const entries = Object.entries(body);
+  const fields = entries.filter(([key]) => key === "title" || key === "content");
+  if (fields.length === 0 ||
+      fields.some(([, value]) => typeof value !== "string") ||
+      (rejectUnknown && fields.length !== entries.length)) {
+    return null;
+  }
+  return Object.fromEntries(fields);
+}
+
 app.route("/articles")
-
-.get(function(req, res) {
-  Article.find({}, function(err, foundArticles) {
-    if (!err) {
-      res.send(foundArticles);
-    } else {
-      res.send(err);
+  .get(async function(req, res, next) {
+    try {
+      res.send(await Article.find({}));
+    } catch (err) {
+      next(err);
     }
-  });
-})
-
-.post(function(req, res) {
-  console.log(req.body.title);
-  console.log(req.body.content);
-  const newArticle = new Article({
-    title: req.body.title,
-    content: req.body.content
-  });
-  newArticle.save(function(err) {
-    if (!err) {
-      res.send("successfully added post")
-    } else {
-      res.send(err);
+  })
+  .post(async function(req, res, next) {
+    const fields = readArticleFields(req.body);
+    if (!fields) return res.status(400).send("Invalid article");
+    try {
+      await Article.create(fields);
+      res.send("successfully added post");
+    } catch (err) {
+      next(err);
     }
-
-  });
-})
-
-.delete(function(req,res){
-  Article.deleteMany({},function(err){
-    if (!err){
+  })
+  .delete(async function(req, res, next) {
+    try {
+      await Article.deleteMany({});
       res.send("Sucessfully delete all posts");
-    }else {
-      res.send(err);
+    } catch (err) {
+      next(err);
     }
   });
-});
-
-////////////Request targeting specific article//////////////////////
 
 app.route("/articles/:articleTitle")
-
-.get(function(req,res){
-  Article.findOne({title: req.params.articleTitle} , function(err,foundArticle){
-    if (foundArticle){
-      res.send(foundArticle);
-    }else {
-      res.send("No article was found")
+  .get(async function(req, res, next) {
+    try {
+      const article = await Article.findOne({title: req.params.articleTitle});
+      if (!article) return res.status(404).send("No article was found");
+      res.send(article);
+    } catch (err) {
+      next(err);
     }
-  });
-})
-
-.put(function(req,res){
-  Article.updateOne({title:req.params.articleTitle},
-    {title:req.body.title,content: req.body.content},
-    {overwrite:true},
-    function(err){
-      if(!err){
-        res.send("successfully updated article");
-        res.redirect("/"+req.body.title);
-      } else{
-        res.send(error);
-      }
-
-
+  })
+  .put(async function(req, res, next) {
+    const fields = readArticleFields(req.body);
+    if (!fields) return res.status(400).send("Invalid article");
+    try {
+      const result = await Article.replaceOne({title: req.params.articleTitle}, fields, {runValidators: true});
+      if (!result.matchedCount) return res.sendStatus(404);
+      res.send("successfully updated article");
+    } catch (err) {
+      next(err);
     }
-  );
-})
-
-.patch(function(req,res){
-
-  Article.updateOne(
-    {title:req.params.articleTitle},
-    {$set: req.body },
-    function(err){
-      if(!err){
-        res.send("Successfully updated article");
-        res.redirect("/"+req.body.title);
-      }else{
-        res.send(err);
-      }
+  })
+  .patch(async function(req, res, next) {
+    const fields = readArticleFields(req.body, true);
+    if (!fields) return res.status(400).send("Invalid article");
+    try {
+      const result = await Article.updateOne({title: req.params.articleTitle}, {$set: fields}, {runValidators: true});
+      if (!result.matchedCount) return res.sendStatus(404);
+      res.send("Successfully updated article");
+    } catch (err) {
+      next(err);
     }
-  );
-})
-
-.delete(function(req,res){
-
-  Article.deleteOne(
-  {title: req.params.articleTitle},
-  function(err){
-    if(!err){
+  })
+  .delete(async function(req, res, next) {
+    try {
+      const result = await Article.deleteOne({title: req.params.articleTitle});
+      if (!result.deletedCount) return res.sendStatus(404);
       res.send("Successfully deleted article");
-      //res.redirect("/");
-    }else{
-      res.send(err);
+    } catch (err) {
+      next(err);
     }
   });
-});
 
 let port = process.env.PORT;
 if (port == null || port == "") {
   port = 3000;
 }
 
-
-
-
-app.listen(port, function() {
-  console.log("Server started successfully");
-});
+mongoose.connect(databaseUri)
+  .then(() => app.listen(port, () => console.log("Server started successfully")))
+  .catch(err => {
+    console.error("MongoDB connection failed", err.name);
+    process.exitCode = 1;
+  });
